@@ -103,6 +103,7 @@ class Scenario(BaseScenario):
         num_landmarks = self.num_agents  # no. of goals equal to no. of agents
         num_scripted_agents_goals = self.num_scripted_agents
         world.collaborative = args.collaborative
+        world.use_shepherd_env = args.use_shepherd_env
 
         # add agents
         global_id = 0
@@ -137,6 +138,12 @@ class Scenario(BaseScenario):
             obstacle.name = f"obstacle {i}"
             obstacle.collide = True
             obstacle.movable = False
+            # obstacle.size = 0.25
+            if world.use_shepherd_env:
+                obstacle.collide = False
+                obstacle.movable = True
+                # obstacle.size = 0.05
+                obstacle.max_speed = 0.5*self.max_speed
             obstacle.global_id = global_id
             global_id += 1
         # make initial conditions
@@ -242,9 +249,18 @@ class Scenario(BaseScenario):
         while True:
             if num_goals_added == self.num_agents:
                 break
-            random_pos = 0.8 * np.random.uniform(
-                -self.world_size / 2, self.world_size / 2, world.dim_p
-            )
+            if world.use_shepherd_env:
+                # print("no")
+                center = world.obstacles[0].state.p_pos
+                radius = 0.5
+                theta = 2 * np.pi * num_goals_added / self.num_agents
+                direction = np.array([np.cos(theta), np.sin(theta)])
+                random_pos = center + radius * direction
+            else:
+                random_pos = 0.8 * np.random.uniform(
+                    -self.world_size / 2, self.world_size / 2, world.dim_p
+                )
+
             goal_size = world.landmarks[num_goals_added].size
             obs_collision = self.is_obstacle_collision(random_pos, goal_size, world)
             landmark_collision = self.is_landmark_collision(
@@ -382,6 +398,14 @@ class Scenario(BaseScenario):
             rew += self.goal_rew
         else:
             rew -= dist_to_goal
+
+        sheep_dist_to_goal = np.sqrt(np.sum(np.square(world.obstacles[0].state.p_pos)))
+        # print(sheep_dist_to_goal)
+        if sheep_dist_to_goal < self.min_dist_thresh:
+            rew += 2 * self.goal_rew
+        else:
+            rew -= 0.8 * sheep_dist_to_goal
+
         if agent.collide:
             for a in world.agents:
                 # do not consider collision with itself

@@ -249,6 +249,13 @@ def get_config():
         "to wandb server. or else will use tensorboard to log data.",
     )
 
+    parser.add_argument(
+        "--use_shepherd_env",
+        action="store_true",
+        default=False,
+        help="[for shepherd usage], by default False",
+    )
+
     # env parameters
     parser.add_argument(
         "--env_name",
@@ -543,7 +550,7 @@ def get_config():
     parser.add_argument(
         "--log_interval",
         type=int,
-        default=5,
+        default=3,
         help="time duration between contiunous twice log printing.",
     )
 

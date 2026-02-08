@@ -1,3 +1,4 @@
+import time
 import gym
 from gym import spaces
 import numpy as np
@@ -288,7 +289,7 @@ class MultiAgentBaseEnv(gym.Env):
                         word = alphabet[np.argmax(other.state.c)]
                     message += other.name + " to " + agent.name + ": " + word + "   "
             # print(message)
-
+                
         for i in range(len(self.viewers)):
             # create viewers (if necessary)
             if self.viewers[i] is None:
@@ -297,7 +298,7 @@ class MultiAgentBaseEnv(gym.Env):
                 # from gym.envs.classic_control import rendering
                 from multiagent import rendering
 
-                self.viewers[i] = rendering.Viewer(700, 700)
+                self.viewers[i] = rendering.Viewer(500, 500)
 
         # create rendering geometry
         if self.render_geoms is None:
@@ -336,7 +337,9 @@ class MultiAgentBaseEnv(gym.Env):
                             entity_comm_geoms.append(comm)
 
                 else:
-                    geom.set_color(*entity.color)
+                    if "landmark" in entity.name:
+                        geom.set_color(*entity.color,alpha=0.3)
+                        xform.set_scale(0.0, 0.0)
                     if entity.channel is not None:
                         dim_c = self.world.dim_c
                         # make circles to represent communication
@@ -355,6 +358,16 @@ class MultiAgentBaseEnv(gym.Env):
                 self.render_geoms.append(geom)
                 self.render_geoms_xform.append(xform)
                 self.comm_geoms.append(entity_comm_geoms)
+
+            # Draw the origin
+            geom = rendering.make_circle(0.025)
+            xform = rendering.Transform()
+            xform.set_translation(0,0)
+            geom.set_color(1, 0, 0)
+            geom.add_attr(xform)
+            self.render_geoms.append(geom)
+            self.render_geoms_xform.append(xform)
+            self.comm_geoms.append([]) 
 
             for wall in self.world.walls:
                 corners = (
@@ -418,20 +431,20 @@ class MultiAgentBaseEnv(gym.Env):
                             self.comm_geoms[e][ci].set_color(color, color, color)
 
             # render the graph connections
-            if hasattr(self.world, "graph_mode"):
-                if self.world.graph_mode:
-                    edge_list = self.world.edge_list.T
-                    assert edge_list is not None, "Edge list should not be None"
-                    for entity1 in self.world.entities:
-                        for entity2 in self.world.entities:
-                            e1_id, e2_id = entity1.global_id, entity2.global_id
-                            if e1_id == e2_id:
-                                continue
-                            # if edge exists draw a line
-                            if [e1_id, e2_id] in edge_list.tolist():
-                                src = entity1.state.p_pos
-                                dest = entity2.state.p_pos
-                                self.viewers[i].draw_line(start=src, end=dest)
+            # if hasattr(self.world, "graph_mode"):
+            #     if self.world.graph_mode:
+            #         edge_list = self.world.edge_list.T
+            #         assert edge_list is not None, "Edge list should not be None"
+            #         for entity1 in self.world.entities:
+            #             for entity2 in self.world.entities:
+            #                 e1_id, e2_id = entity1.global_id, entity2.global_id
+            #                 if e1_id == e2_id:
+            #                     continue
+            #                 # if edge exists draw a line
+            #                 if [e1_id, e2_id] in edge_list.tolist():
+            #                     src = entity1.state.p_pos
+            #                     dest = entity2.state.p_pos
+            #                     self.viewers[i].draw_line(start=src, end=dest, color=(0.9, 0.9, 0.9))
 
             # render to display or array
             results.append(self.viewers[i].render(return_rgb_array=mode == "rgb_array"))

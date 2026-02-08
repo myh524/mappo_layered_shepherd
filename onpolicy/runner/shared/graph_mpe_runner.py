@@ -106,8 +106,7 @@ class GMPERunner(Runner):
 
     def warmup(self):
         # reset env
-        obs, agent_id, node_obs, adj = self.envs.reset()
-
+        obs, agent_id, node_obs, adj = self.envs.reset()        # the information from n agents(already spliced)
         # replay buffer
         if self.use_centralized_V:
             # (n_rollout_threads, n_agents, feats) -> (n_rollout_threads, n_agents*feats)
@@ -449,6 +448,13 @@ class GMPERunner(Runner):
                             time.sleep(self.all_args.ifi - elapsed)
                     else:
                         envs.render("human")
+                        # keep step period 0.1s
+                        calc_end = time.time()
+                        calc_period = calc_end - calc_start
+                        if calc_period < 0.1:
+                            time.sleep(0.1-calc_period)
+                        # calc_end = time.time()
+                        # print(calc_end-calc_start)
 
             env_infos = self.process_infos(infos)
             # print('_'*50)

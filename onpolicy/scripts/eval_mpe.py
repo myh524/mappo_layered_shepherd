@@ -14,7 +14,7 @@ import os, sys
 sys.path.append(os.path.abspath(os.getcwd()))
 
 from utils.utils import print_args, print_box
-from onpolicy.config import get_config
+from onpolicy.config import get_config, graph_config
 from multiagent.MPE_env import MPEEnv, GraphMPEEnv
 from onpolicy.envs.env_wrappers import (
     SubprocVecEnv,
@@ -157,8 +157,10 @@ def modify_args(
 def main(args):
     # model_dir = 'trained_models/navigation/Navigation/rmappo/wandb/offline-run-20210720_220614-1eqhk4l1/files'
     parser = get_config()
-    all_args = parse_args(args, parser)
-    all_args = modify_args(all_args.model_dir, all_args)
+    all_args = parse_args(sys.argv[1:], parser)  # ✅ 解析 --scenario_name 等自定义参数
+    all_args, parser = graph_config(sys.argv[1:], parser)  # ✅ 补充 GNN 参数
+    # all_args = parse_args(args, parser)
+    # all_args = modify_args(all_args.model_dir, all_args)
 
     if all_args.algorithm_name == "rmappo" or all_args.algorithm_name == "rmappg":
         assert (
@@ -219,7 +221,7 @@ def main(args):
     runner = Runner(config)
     # actor_state_dict = torch.load(str(model_dir) + '/actor.pt')
     # runner.policy.actor.load_state_dict(actor_state_dict)
-    runner.render(True)
+    runner.render()
 
     # post process
     envs.close()

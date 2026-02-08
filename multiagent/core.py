@@ -128,6 +128,7 @@ class World(object):
         self.graph_feat_type = None
         self.edge_weight = None
         # list of agents and entities (can change at execution-time!)
+        self.use_shepherd_env = False
         self.agents = []
         self.landmarks = []
         self.scripted_agents = []
@@ -142,7 +143,7 @@ class World(object):
         self.dim_color = 3
         # simulation timestep
         self.dt = 0.1
-        # physical damping
+        # physical damping (0.25)
         self.damping = 0.25
         # contact response parameters
         self.contact_force = 1e2
@@ -151,6 +152,10 @@ class World(object):
         self.cache_dists = False
         self.cached_dist_vect = None
         self.cached_dist_mag = None
+        # shepered parameters
+        self.agent_influence_range = 0.45
+        self.influence_force = 0.8
+        self.keep_radius = 0.4
 
     # return all entities in the world
     @property
@@ -231,6 +236,16 @@ class World(object):
         for agent in self.agents:
             agent.t += self.dt
             self.update_agent_state(agent)
+        # print(self.use_shepherd_env)
+        if self.use_shepherd_env:
+            # print(self.obstacles[0].state.p_pos)
+            # print("no")
+            for i, landmark in enumerate(self.landmarks):
+                center = self.obstacles[0].state.p_pos
+                radius = self.keep_radius
+                theta = 2 * np.pi * i / (len(self.agents) + 1e-6)
+                direction = np.array([np.cos(theta), np.sin(theta)])
+                landmark.state.p_pos = center + radius * direction
         if self.cache_dists:
             self.calculate_distances()
 
@@ -247,6 +262,22 @@ class World(object):
                 p_force[i] = (
                     agent.mass * agent.accel if agent.accel is not None else agent.mass
                 ) * agent.action.u + noise
+        # update sheep force
+        if self.use_shepherd_env:
+            offset = len(self.agents) + len(self.landmarks)
+            for i, obstacle in enumerate(self.obstacles):
+                idx = offset + i
+                if obstacle.movable:
+                    # noise = np.random.randn(*obstacle.action.u.shape) * obstacle.u_noise if obstacle.u_noise else 0.0
+                    action_u = np.zeros(self.dim_p)
+                    for agent in self.policy_agents:  
+                        delta = obstacle.state.p_pos - agent.state.p_pos
+                        dist_sq = np.sqrt(np.sum(delta**2)) + 1e-6
+                        if dist_sq < self.agent_influence_range:      # agent influence range
+                            action_u += self.influence_force * delta / dist_sq
+                    p_force[idx] = (obstacle.mass * obstacle.accel if obstacle.accel is not None else obstacle.mass
+                                    ) * action_u
+
         return p_force
 
     # gather physical forces acting on entities
