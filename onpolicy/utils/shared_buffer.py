@@ -102,7 +102,7 @@ class SharedReplayBuffer(object):
             dtype=np.float32,
         )
         self.action_log_probs = np.zeros(
-            (self.episode_length, self.n_rollout_threads, num_agents, act_shape),
+            (self.episode_length, self.n_rollout_threads, num_agents, 1),
             dtype=np.float32,
         )
         self.rewards = np.zeros(
@@ -136,31 +136,6 @@ class SharedReplayBuffer(object):
     ) -> None:
         """
         Insert data into the buffer.
-        share_obs: (argparse.Namespace)
-            arguments containing relevant model, policy, and env information.
-        obs: (np.ndarray)
-            local agent observations.
-        rnn_states_actor: (np.ndarray)
-            RNN states for actor network.
-        rnn_states_critic: (np.ndarray)
-            RNN states for critic network.
-        actions:(np.ndarray)
-            actions taken by agents.
-        action_log_probs:(np.ndarray)
-            log probs of actions taken by agents
-        value_preds: (np.ndarray)
-            value function prediction at each step.
-        rewards: (np.ndarray)
-            reward collected at each step.
-        masks: (np.ndarray)
-            denotes whether the environment has terminated or not.
-        bad_masks: (np.ndarray)
-            action space for agents.
-        active_masks: (np.ndarray)
-            denotes whether an agent is active or dead in the env.
-        available_actions: (np.ndarray)
-            actions available to each agent.
-            If None, all actions are available.
         """
         self.share_obs[self.step + 1] = share_obs.copy()
         self.obs[self.step + 1] = obs.copy()
@@ -171,6 +146,7 @@ class SharedReplayBuffer(object):
         self.value_preds[self.step] = value_preds.copy()
         self.rewards[self.step] = rewards.copy()
         self.masks[self.step + 1] = masks.copy()
+
         if bad_masks is not None:
             self.bad_masks[self.step + 1] = bad_masks.copy()
         if active_masks is not None:
@@ -180,71 +156,7 @@ class SharedReplayBuffer(object):
 
         self.step = (self.step + 1) % self.episode_length
 
-    def chooseinsert(
-        self,
-        share_obs: arr,
-        obs: arr,
-        rnn_states: arr,
-        rnn_states_critic: arr,
-        actions: arr,
-        action_log_probs: arr,
-        value_preds: arr,
-        rewards: arr,
-        masks: arr,
-        bad_masks: arr = None,
-        active_masks: arr = None,
-        available_actions: arr = None,
-    ) -> None:
-        """
-        Insert data into the buffer. This insert function is
-        used specifically for Hanabi, which is turn based.
-        share_obs: (np.ndarray)
-            arguments containing relevant model, policy, and env information.
-        obs: (np.ndarray)
-            local agent observations.
-        rnn_states_actor: (np.ndarray)
-            RNN states for actor network.
-        rnn_states_critic: (np.ndarray)
-            RNN states for critic network.
-        actions:(np.ndarray)
-            actions taken by agents.
-        action_log_probs:(np.ndarray)
-            log probs of actions taken by agents
-        value_preds: (np.ndarray)
-            value function prediction at each step.
-        rewards: (np.ndarray)
-            reward collected at each step.
-        masks: (np.ndarray)
-            denotes whether the environment has terminated or not.
-        bad_masks: (np.ndarray)
-            denotes indicate whether whether true
-            terminal state or due to episode limit
-        active_masks: (np.ndarray)
-            denotes whether an agent is active or dead in the env.
-        available_actions: (np.ndarray)
-            actions available to each agent.
-            If None, all actions are available.
-        """
-        self.share_obs[self.step] = share_obs.copy()
-        self.obs[self.step] = obs.copy()
-        self.rnn_states[self.step + 1] = rnn_states.copy()
-        self.rnn_states_critic[self.step + 1] = rnn_states_critic.copy()
-        self.actions[self.step] = actions.copy()
-        self.action_log_probs[self.step] = action_log_probs.copy()
-        self.value_preds[self.step] = value_preds.copy()
-        self.rewards[self.step] = rewards.copy()
-        self.masks[self.step + 1] = masks.copy()
-        if bad_masks is not None:
-            self.bad_masks[self.step + 1] = bad_masks.copy()
-        if active_masks is not None:
-            self.active_masks[self.step] = active_masks.copy()
-        if available_actions is not None:
-            self.available_actions[self.step] = available_actions.copy()
-
-        self.step = (self.step + 1) % self.episode_length
-
-    def after_update(self) -> None:
-        """Copy last timestep data to first index. Called after update to model."""
+    def after_update(self):
         self.share_obs[0] = self.share_obs[-1].copy()
         self.obs[0] = self.obs[-1].copy()
         self.rnn_states[0] = self.rnn_states[-1].copy()
@@ -255,22 +167,9 @@ class SharedReplayBuffer(object):
         if self.available_actions is not None:
             self.available_actions[0] = self.available_actions[-1].copy()
 
-    def chooseafter_update(self):
-        """Copy last timestep data to first index. This method is used for Hanabi."""
-        self.rnn_states[0] = self.rnn_states[-1].copy()
-        self.rnn_states_critic[0] = self.rnn_states_critic[-1].copy()
-        self.masks[0] = self.masks[-1].copy()
-        self.bad_masks[0] = self.bad_masks[-1].copy()
-
-    def compute_returns(
-        self, next_value: arr, value_normalizer: Optional[PopArt] = None
-    ) -> None:
+    def compute_returns(self, next_value: arr, value_normalizer=None):
         """
-        Compute returns either as discounted sum of rewards, or using GAE.
-        next_value: (np.ndarray)
-            value predictions for the step after the last episode step.
-        value_normalizer: (PopArt)
-            If not None, PopArt value normalizer instance.
+        Compute returns either with GAE or without.
         """
         if self._use_proper_time_limits:
             if self._use_gae:
@@ -278,7 +177,6 @@ class SharedReplayBuffer(object):
                 gae = 0
                 for step in reversed(range(self.rewards.shape[0])):
                     if self._use_popart or self._use_valuenorm:
-                        # step + 1
                         delta = (
                             self.rewards[step]
                             + self.gamma
@@ -380,12 +278,6 @@ class SharedReplayBuffer(object):
     ]:
         """
         Yield training data for MLP policies.
-        advantages: (np.ndarray)
-            advantage estimates.
-        num_mini_batch: (int)
-            number of minibatches to split the batch into.
-        mini_batch_size: (int)
-            number of samples in each minibatch.
         """
         episode_length, n_rollout_threads, num_agents = self.rewards.shape[0:3]
         batch_size = n_rollout_threads * episode_length * num_agents
@@ -421,13 +313,10 @@ class SharedReplayBuffer(object):
         returns = self.returns[:-1].reshape(-1, 1)
         masks = self.masks[:-1].reshape(-1, 1)
         active_masks = self.active_masks[:-1].reshape(-1, 1)
-        action_log_probs = self.action_log_probs.reshape(
-            -1, self.action_log_probs.shape[-1]
-        )
+        action_log_probs = self.action_log_probs.reshape(-1, 1)
         advantages = advantages.reshape(-1, 1)
 
         for indices in sampler:
-            # obs size [T+1 N M Dim]-->[T N M Dim]-->[T*N*M,Dim]-->[index,Dim]
             share_obs_batch = share_obs[indices]
             obs_batch = obs[indices]
             rnn_states_batch = rnn_states[indices]
@@ -456,10 +345,6 @@ class SharedReplayBuffer(object):
     ]:
         """
         Yield training data for non-chunked RNN training.
-        advantages: (np.ndarray)
-            advantage estimates.
-        num_mini_batch: (int)
-            number of minibatches to split the batch into.
         """
         episode_length, n_rollout_threads, num_agents = self.rewards.shape[0:3]
         batch_size = n_rollout_threads * num_agents
@@ -488,9 +373,7 @@ class SharedReplayBuffer(object):
         returns = self.returns.reshape(-1, batch_size, 1)
         masks = self.masks.reshape(-1, batch_size, 1)
         active_masks = self.active_masks.reshape(-1, batch_size, 1)
-        action_log_probs = self.action_log_probs.reshape(
-            -1, batch_size, self.action_log_probs.shape[-1]
-        )
+        action_log_probs = self.action_log_probs.reshape(-1, 1)
         advantages = advantages.reshape(-1, batch_size, 1)
 
         for start_ind in range(0, batch_size, num_envs_per_batch):
@@ -523,9 +406,7 @@ class SharedReplayBuffer(object):
                 old_action_log_probs_batch.append(action_log_probs[:, ind])
                 adv_targ.append(advantages[:, ind])
 
-            # [N[T, dim]]
             T, N = self.episode_length, num_envs_per_batch
-            # These are all from_numpys of size (T, N, -1)
             share_obs_batch = np.stack(share_obs_batch, 1)
             obs_batch = np.stack(obs_batch, 1)
             actions_batch = np.stack(actions_batch, 1)
@@ -538,7 +419,6 @@ class SharedReplayBuffer(object):
             old_action_log_probs_batch = np.stack(old_action_log_probs_batch, 1)
             adv_targ = np.stack(adv_targ, 1)
 
-            # States is just a (N, dim) from_numpy [N[1,dim]]
             rnn_states_batch = np.stack(rnn_states_batch).reshape(
                 N, *self.rnn_states.shape[3:]
             )
@@ -546,7 +426,6 @@ class SharedReplayBuffer(object):
                 N, *self.rnn_states_critic.shape[3:]
             )
 
-            # Flatten the (T, N, ...) from_numpys to (T * N, ...)
             share_obs_batch = _flatten(T, N, share_obs_batch)
             obs_batch = _flatten(T, N, obs_batch)
             actions_batch = _flatten(T, N, actions_batch)
@@ -570,16 +449,10 @@ class SharedReplayBuffer(object):
     ]:
         """
         Yield training data for chunked RNN training.
-        advantages: (np.ndarray)
-            advantage estimates.
-        num_mini_batch: (int)
-            number of minibatches to split the batch into.
-        data_chunk_length: (int)
-            length of sequence chunks with which to train RNN.
         """
         episode_length, n_rollout_threads, num_agents = self.rewards.shape[0:3]
         batch_size = n_rollout_threads * episode_length * num_agents
-        data_chunks = batch_size // data_chunk_length  # [C=r*T*M/L]
+        data_chunks = batch_size // data_chunk_length
         mini_batch_size = data_chunks // num_mini_batch
 
         rand = torch.randperm(data_chunks).numpy()
@@ -610,8 +483,6 @@ class SharedReplayBuffer(object):
         returns = _cast(self.returns[:-1])
         masks = _cast(self.masks[:-1])
         active_masks = _cast(self.active_masks[:-1])
-        # rnn_states = _cast(self.rnn_states[:-1])
-        # rnn_states_critic = _cast(self.rnn_states_critic[:-1])
         rnn_states = (
             self.rnn_states[:-1]
             .transpose(1, 2, 0, 3, 4)
@@ -642,7 +513,6 @@ class SharedReplayBuffer(object):
 
             for index in indices:
                 ind = index * data_chunk_length
-                # size [T+1 N M Dim]-->[T N M Dim]-->[N,M,T,Dim]-->[N*M*T,Dim]-->[L,Dim]
                 share_obs_batch.append(share_obs[ind : ind + data_chunk_length])
                 obs_batch.append(obs[ind : ind + data_chunk_length])
                 actions_batch.append(actions[ind : ind + data_chunk_length])
@@ -658,13 +528,11 @@ class SharedReplayBuffer(object):
                     action_log_probs[ind : ind + data_chunk_length]
                 )
                 adv_targ.append(advantages[ind : ind + data_chunk_length])
-                # size [T+1 N M Dim]-->[T N M Dim]-->[N M T Dim]-->[N*M*T,Dim]-->[1,Dim]
                 rnn_states_batch.append(rnn_states[ind])
                 rnn_states_critic_batch.append(rnn_states_critic[ind])
 
             L, N = data_chunk_length, mini_batch_size
 
-            # These are all from_numpys of size (L, N, Dim)
             share_obs_batch = np.stack(share_obs_batch, axis=1)
             obs_batch = np.stack(obs_batch, axis=1)
 
@@ -678,7 +546,6 @@ class SharedReplayBuffer(object):
             old_action_log_probs_batch = np.stack(old_action_log_probs_batch, axis=1)
             adv_targ = np.stack(adv_targ, axis=1)
 
-            # States is just a (N, -1) from_numpy
             rnn_states_batch = np.stack(rnn_states_batch).reshape(
                 N, *self.rnn_states.shape[3:]
             )
@@ -686,7 +553,6 @@ class SharedReplayBuffer(object):
                 N, *self.rnn_states_critic.shape[3:]
             )
 
-            # Flatten the (L, N, ...) from_numpys to (L * N, ...)
             share_obs_batch = _flatten(L, N, share_obs_batch)
             obs_batch = _flatten(L, N, obs_batch)
             actions_batch = _flatten(L, N, actions_batch)
