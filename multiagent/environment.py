@@ -1,6 +1,6 @@
 import time
-import gym
-from gym import spaces
+import gymnasium as gym
+from gymnasium import spaces
 import numpy as np
 import math
 import random
@@ -360,14 +360,14 @@ class MultiAgentBaseEnv(gym.Env):
                 self.comm_geoms.append(entity_comm_geoms)
 
             # Draw the origin
-            geom = rendering.make_circle(0.025)
-            xform = rendering.Transform()
-            xform.set_translation(0,0)
-            geom.set_color(1, 0, 0)
-            geom.add_attr(xform)
-            self.render_geoms.append(geom)
-            self.render_geoms_xform.append(xform)
-            self.comm_geoms.append([]) 
+            # geom = rendering.make_circle(0.025)
+            # xform = rendering.Transform()
+            # xform.set_translation(0,0)
+            # geom.set_color(1, 0, 0)
+            # geom.add_attr(xform)
+            # self.render_geoms.append(geom)
+            # self.render_geoms_xform.append(xform)
+            # self.comm_geoms.append([]) 
 
             for wall in self.world.walls:
                 corners = (
