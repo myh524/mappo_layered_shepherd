@@ -7,6 +7,7 @@ import setproctitle
 import numpy as np
 from pathlib import Path
 import torch
+from datetime import datetime
 
 import os, sys
 
@@ -74,7 +75,7 @@ def make_eval_env(all_args: argparse.Namespace):
     else:
         if all_args.env_name == "GraphMPE":
             return GraphSubprocVecEnv(
-                [get_env_fn(i) for i in range(all_args.n_rollout_threads)]
+                [get_env_fn(i) for i in range(all_args.n_eval_rollout_threads)]
             )
         return SubprocVecEnv(
             [get_env_fn(i) for i in range(all_args.n_eval_rollout_threads)]
@@ -148,6 +149,11 @@ def main(args):
 
         all_args, parser = graph_config(args, parser)
 
+    if getattr(all_args, "scenario_name", "") == "navigation_graph_formation":
+        all_args.num_embeddings = 1
+        all_args.critic_cent_extras_dim = 0
+        all_args.use_env_critic_share_obs = True
+
     if all_args.algorithm_name in ["rmappo"]:
         assert (
             all_args.use_recurrent_policy or all_args.use_naive_recurrent_policy
@@ -184,16 +190,53 @@ def main(args):
     if all_args.verbose:
         print_args(all_args)
 
-    # run dir
+    # run dir (repo-root style): results/.../<scenario>/<algo>/seed<seed>/<run_name>/
+    repo_root = Path(__file__).resolve().parents[3]
+    results_root = (repo_root / str(all_args.results_root)).resolve()
+
+    seed_dir = f"seed{int(all_args.seed)}"
+    if getattr(all_args, "run_name", None):
+        run_name = str(all_args.run_name)
+    else:
+        run_name = datetime.now().strftime("%Y%m%d_%H%M%S")
+
     run_dir = (
-        Path(os.path.split(os.path.dirname(os.path.abspath(__file__)))[0] + "/results")
-        / all_args.env_name
-        / all_args.scenario_name
-        / all_args.algorithm_name
-        / all_args.experiment_name
+        results_root
+        / str(all_args.scenario_name)
+        / str(all_args.algorithm_name)
+        / seed_dir
+        / run_name
     )
-    if not run_dir.exists():
-        os.makedirs(str(run_dir))
+    # Avoid clobbering an existing run directory when --run_name is reused.
+    if run_dir.exists() and any(run_dir.iterdir()):
+        base = run_name
+        suffix = 1
+        while True:
+            candidate = results_root / str(all_args.scenario_name) / str(
+                all_args.algorithm_name
+            ) / seed_dir / f"{base}_{suffix}"
+            if (not candidate.exists()) or (not any(candidate.iterdir())):
+                run_dir = candidate
+                run_name = run_dir.name
+                break
+            suffix += 1
+    os.makedirs(str(run_dir), exist_ok=True)
+    print_box(f"Run directory: {run_dir}")
+    # Stable pointer for tooling/scripts: .../seedK/latest -> ./<run_name>
+    latest_link = (
+        results_root
+        / str(all_args.scenario_name)
+        / str(all_args.algorithm_name)
+        / seed_dir
+        / "latest"
+    )
+    try:
+        if latest_link.is_symlink() or latest_link.exists():
+            latest_link.unlink()
+        os.symlink("./" + str(run_name), str(latest_link))
+        print_box(f"Latest symlink: {latest_link} -> ./{run_name}")
+    except Exception as e:
+        print(f"Warning: could not update latest symlink ({latest_link}): {e}")
 
     # wandb
     if all_args.use_wandb:
@@ -230,21 +273,8 @@ def main(args):
             reinit=True,
         )
     else:
-        if not run_dir.exists():
-            curr_run = "run1"
-        else:
-            exst_run_nums = [
-                int(str(folder.name).split("run")[1])
-                for folder in run_dir.iterdir()
-                if str(folder.name).startswith("run")
-            ]
-            if len(exst_run_nums) == 0:
-                curr_run = "run1"
-            else:
-                curr_run = "run%i" % (max(exst_run_nums) + 1)
-        run_dir = run_dir / curr_run
-        if not run_dir.exists():
-            os.makedirs(str(run_dir))
+        # Non-wandb runs already use a unique timestamped folder under results_root.
+        pass
 
     setproctitle.setproctitle(
         str(all_args.algorithm_name)

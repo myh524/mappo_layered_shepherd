@@ -129,6 +129,8 @@ class World(object):
         self.edge_weight = None
         # list of agents and entities (can change at execution-time!)
         self.use_shepherd_env = False
+        # Dimensionless scale vs a nominal arena size (used to rescale discrete controls).
+        self.phys_scale = 1.0
         self.agents = []
         self.landmarks = []
         self.scripted_agents = []
@@ -259,8 +261,10 @@ class World(object):
                     if agent.u_noise
                     else 0.0
                 )
+                g = float(getattr(self, "phys_scale", 1.0))
                 p_force[i] = (
-                    agent.mass * agent.accel if agent.accel is not None else agent.mass
+                    (agent.mass * agent.accel if agent.accel is not None else agent.mass)
+                    * float(g)
                 ) * agent.action.u + noise
         # update sheep force
         if self.use_shepherd_env:

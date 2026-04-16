@@ -18,8 +18,40 @@ from multiagent.scenario import BaseScenario
 
 entity_mapping = {"agent": 0, "landmark": 1, "obstacle": 2}
 
+# Reference world scale used when the original hyperparameters were tuned.
+# When `world.world_size` changes, we rescale dynamics/geometry so a fixed policy
+# trained at the reference scale still sees (approximately) the same normalized
+# observations/rewards/graph connectivity.
+NOMINAL_WORLD_SIZE: float = 2.0
+
 
 class Scenario(BaseScenario):
+    def _phys_scale(self, world: World) -> float:
+        return float(world.world_size) / float(NOMINAL_WORLD_SIZE)
+
+    def _norm_pos(self, world: World, v: arr) -> arr:
+        half = float(world.world_size) / 2.0
+        denom = float(NOMINAL_WORLD_SIZE) / 2.0
+        return np.asarray(v, dtype=np.float32) * (denom / max(half, 1e-8))
+
+    def _norm_vel(self, world: World, v: arr) -> arr:
+        g = float(getattr(world, "phys_scale", 1.0))
+        # Physical speed limit scales ~linearly with arena (see make_world: agent.max_speed *= g).
+        # Express velocities in the same nominal units as world_size=NOMINAL_WORLD_SIZE (not ~g^2).
+        denom = max(float(self.max_speed) * g, 1e-8)
+        scale = float(self.max_speed) / denom  # == 1/g when max_speed is fixed
+        return np.asarray(v, dtype=np.float32) * scale
+
+    def _scale_entity_sizes(self, world: World, g: float) -> None:
+        """Scale default MPE entity radii with arena size (keeps collision geometry similar)."""
+        if g == 1.0:
+            return
+        for e in world.entities:
+            try:
+                e.size = float(e.size) * g
+            except Exception:
+                pass
+
     def make_world(self, args: argparse.Namespace) -> World:
         """
         Parameters in args
@@ -94,6 +126,18 @@ class Scenario(BaseScenario):
         world.graph_mode = True
         world.graph_feat_type = args.graph_feat_type
         world.world_length = args.episode_length
+        # IMPORTANT: World dynamics clamp positions based on world.world_size.
+        # Keep this in sync with scenario sampling bounds (args.world_size).
+        world.world_size = float(args.world_size)
+        g = self._phys_scale(world)
+        world.phys_scale = g  # type: ignore[attr-defined]
+
+        # Scale graph connectivity threshold with arena size (distances scale ~linearly).
+        try:
+            self.max_edge_dist = float(self.max_edge_dist) * g
+        except Exception:
+            pass
+
         # metrics to keep track of
         world.current_time_step = 0
         # to track time required to reach goal
@@ -104,6 +148,13 @@ class Scenario(BaseScenario):
         num_scripted_agents_goals = self.num_scripted_agents
         world.collaborative = args.collaborative
         world.use_shepherd_env = args.use_shepherd_env
+
+        # Shepherd-specific radii/forces in `multiagent/core.py:World` are tuned at the
+        # nominal world size; scale them when the arena grows/shrinks.
+        if world.use_shepherd_env:
+            world.agent_influence_range = float(world.agent_influence_range) * g
+            world.influence_force = float(world.influence_force) * g
+            world.keep_radius = float(world.keep_radius) * g
 
         # add agents
         global_id = 0
@@ -119,7 +170,7 @@ class Scenario(BaseScenario):
             # NOTE not changing size of agent because of some edge cases;
             # TODO have to change this later
             # agent.size = 0.15
-            agent.max_speed = self.max_speed
+            agent.max_speed = float(self.max_speed) * g
         # add landmarks (goals)
         world.landmarks = [Landmark() for i in range(num_landmarks)]
         world.scripted_agents_goals = [
@@ -139,15 +190,17 @@ class Scenario(BaseScenario):
             obstacle.collide = True
             obstacle.movable = False
             # obstacle.size = 0.25
-            if world.use_shepherd_env:
-                obstacle.collide = False
-                obstacle.movable = True
-                # obstacle.size = 0.05
-                obstacle.max_speed = 0.5*self.max_speed
+            # if world.use_shepherd_env:
+            #     obstacle.collide = False
+            #     obstacle.movable = True
+            #     # obstacle.size = 0.05
+            #     obstacle.max_speed = 0.5 * float(self.max_speed) * g
             obstacle.global_id = global_id
             global_id += 1
         # make initial conditions
         self.reset_world(world)
+        # After entities exist, scale default sizes for larger/smaller arenas.
+        self._scale_entity_sizes(world, g)
         return world
 
     def reset_world(self, world: World) -> None:
@@ -252,7 +305,8 @@ class Scenario(BaseScenario):
             if world.use_shepherd_env:
                 # print("no")
                 center = world.obstacles[0].state.p_pos
-                radius = 0.5
+                g = float(getattr(world, "phys_scale", 1.0))
+                radius = 0.5 * g
                 theta = 2 * np.pi * num_goals_added / self.num_agents
                 direction = np.array([np.cos(theta), np.sin(theta)])
                 random_pos = center + radius * direction
@@ -288,7 +342,10 @@ class Scenario(BaseScenario):
         collisions = 0
         occupied_landmarks = 0
         goal = world.get_entity("landmark", agent.id)
-        dist = np.sqrt(np.sum(np.square(agent.state.p_pos - goal.state.p_pos)))
+        g = float(getattr(world, "phys_scale", 1.0))
+        dist = np.sqrt(np.sum(np.square(agent.state.p_pos - goal.state.p_pos))) / max(
+            g, 1e-8
+        )
         world.dist_left_to_goal[agent.id] = dist
         # only update times_required for the first time it reaches the goal
         if dist < self.min_dist_thresh and (world.times_required[agent.id] == -1):
@@ -363,8 +420,11 @@ class Scenario(BaseScenario):
         agent_id = agent.id
         # get the goal associated to this agent
         landmark = world.get_entity(entity_type="landmark", id=agent_id)
-        dist = np.sqrt(np.sum(np.square(agent.state.p_pos - landmark.state.p_pos)))
-        min_time = dist / agent.max_speed
+        g = float(getattr(world, "phys_scale", 1.0))
+        dist = np.sqrt(np.sum(np.square(agent.state.p_pos - landmark.state.p_pos))) / max(
+            g, 1e-8
+        )
+        min_time = dist / max(float(self.max_speed), 1e-8)
         agent.goal_min_time = min_time
         return min_time
 
@@ -373,7 +433,10 @@ class Scenario(BaseScenario):
         # if we are using dones then return appropriate done
         if self.use_dones:
             landmark = world.get_entity("landmark", agent.id)
-            dist = np.sqrt(np.sum(np.square(agent.state.p_pos - landmark.state.p_pos)))
+            g = float(getattr(world, "phys_scale", 1.0))
+            dist = np.sqrt(np.sum(np.square(agent.state.p_pos - landmark.state.p_pos))) / max(
+                g, 1e-8
+            )
             if dist < self.min_dist_thresh:
                 return True
             else:
@@ -387,24 +450,30 @@ class Scenario(BaseScenario):
                 return False
 
     def reward(self, agent: Agent, world: World) -> float:
-        # Agents are rewarded based on distance to
-        # its landmark, penalized for collisions
-        rew = 0
-        agents_goal = world.get_entity(entity_type="landmark", id=agent.id)
-        dist_to_goal = np.sqrt(
-            np.sum(np.square(agent.state.p_pos - agents_goal.state.p_pos))
-        )
-        if dist_to_goal < self.min_dist_thresh:
-            rew += self.goal_rew
-        else:
-            rew -= dist_to_goal
+        # Continuous shaping:
+        # - closer to own landmark => larger reward
+        # - closer to sheep (obstacle[0] when shepherd env) => larger penalty
+        # Collision penalties remain unchanged below.
+        rew = 0.0
+        g = float(getattr(world, "phys_scale", 1.0))
+        denom = max(g, 1e-8)
 
-        sheep_dist_to_goal = np.sqrt(np.sum(np.square(world.obstacles[0].state.p_pos)))
-        # print(sheep_dist_to_goal)
-        if sheep_dist_to_goal < self.min_dist_thresh:
-            rew += 2 * self.goal_rew
-        else:
-            rew -= 0.8 * sheep_dist_to_goal
+        agents_goal = world.get_entity(entity_type="landmark", id=agent.id)
+        dist_to_goal = float(
+            np.linalg.norm(agent.state.p_pos - agents_goal.state.p_pos) / denom
+        )
+        # Bounded, smooth in [0, goal_rew].
+        rew += float(self.goal_rew) * float(np.exp(-dist_to_goal))
+        # Add a fixed bonus once the agent is within the "reached" threshold.
+        if dist_to_goal < float(self.min_dist_thresh):
+            rew += float(self.goal_rew)
+
+        # Penalize being close to sheep. (Do NOT use sheep_dist_to_goal.)
+        if getattr(world, "use_shepherd_env", False) and len(getattr(world, "obstacles", [])) > 0:
+            sheep_pos = world.obstacles[0].state.p_pos
+            dist_to_sheep = float(np.linalg.norm(agent.state.p_pos - sheep_pos) / denom)
+            sheep_penalty_scale = 1.0
+            rew -= sheep_penalty_scale * float(self.goal_rew) * float(np.exp(-dist_to_sheep))
 
         if agent.collide:
             for a in world.agents:
@@ -418,7 +487,7 @@ class Scenario(BaseScenario):
                 pos=agent.state.p_pos, entity_size=agent.size, world=world
             ):
                 rew -= self.collision_rew
-        return rew
+        return float(rew)
 
     def observation(self, agent: Agent, world: World) -> arr:
         """
@@ -428,8 +497,14 @@ class Scenario(BaseScenario):
         # get positions of all entities in this agent's reference frame
         goal_pos = []
         agents_goal = world.get_entity("landmark", agent.id)
-        goal_pos.append(agents_goal.state.p_pos - agent.state.p_pos)
-        return np.concatenate([agent.state.p_vel, agent.state.p_pos] + goal_pos)
+        goal_pos.append(self._norm_pos(world, agents_goal.state.p_pos - agent.state.p_pos))
+        return np.concatenate(
+            [
+                self._norm_vel(world, agent.state.p_vel),
+                self._norm_pos(world, agent.state.p_pos),
+            ]
+            + goal_pos
+        )
 
     def get_id(self, agent: Agent) -> arr:
         return np.array([agent.global_id])
@@ -470,7 +545,10 @@ class Scenario(BaseScenario):
                 node_obs.append(node_obs_i)
 
         node_obs = np.array(node_obs)
-        adj = world.cached_dist_mag
+        # GNN builds edges with `args.max_edge_dist` (nominal length units, default ~1).
+        # Distances in the world grow ~linearly with phys_scale, so feed nominal distances here.
+        g = float(getattr(world, "phys_scale", 1.0))
+        adj = np.asarray(world.cached_dist_mag, dtype=np.float32) / max(g, 1e-8)
 
         return node_obs, adj
 
@@ -499,10 +577,12 @@ class Scenario(BaseScenario):
         Returns: ([velocity, position, goal_pos, entity_type])
         in global coords for the given entity
         """
-        pos = entity.state.p_pos
-        vel = entity.state.p_vel
+        pos = self._norm_pos(world, entity.state.p_pos)
+        vel = self._norm_vel(world, entity.state.p_vel)
         if "agent" in entity.name:
-            goal_pos = world.get_entity("landmark", entity.id).state.p_pos
+            goal_pos = self._norm_pos(
+                world, world.get_entity("landmark", entity.id).state.p_pos
+            )
             entity_type = entity_mapping["agent"]
         elif "landmark" in entity.name:
             goal_pos = pos
@@ -526,11 +606,11 @@ class Scenario(BaseScenario):
         agent_vel = agent.state.p_vel
         entity_pos = entity.state.p_pos
         entity_vel = entity.state.p_vel
-        rel_pos = entity_pos - agent_pos
-        rel_vel = entity_vel - agent_vel
+        rel_pos = self._norm_pos(world, entity_pos - agent_pos)
+        rel_vel = self._norm_vel(world, entity_vel - agent_vel)
         if "agent" in entity.name:
             goal_pos = world.get_entity("landmark", entity.id).state.p_pos
-            rel_goal_pos = goal_pos - agent_pos
+            rel_goal_pos = self._norm_pos(world, goal_pos - agent_pos)
             entity_type = entity_mapping["agent"]
         elif "landmark" in entity.name:
             rel_goal_pos = rel_pos

@@ -27,6 +27,8 @@ class MPERunner(Runner):
         episodes = (
             int(self.num_env_steps) // self.episode_length // self.n_rollout_threads
         )
+        steps_per_rollout = int(self.episode_length * self.n_rollout_threads)
+        last_saved_steps = 0
 
         for episode in range(episodes):
             if self.use_linear_lr_decay:
@@ -72,8 +74,24 @@ class MPERunner(Runner):
             )
 
             # save model
-            if episode % self.save_interval == 0 or episode == episodes - 1:
-                self.save()
+            save_by_episode = (self.save_interval > 0) and (episode % self.save_interval == 0)
+            save_by_steps = False
+            ts_int = getattr(self.all_args, "save_timesteps_interval", None)
+            if ts_int is not None and int(ts_int) > 0 and steps_per_rollout > 0:
+                cur = int(total_num_steps)
+                prev = int(last_saved_steps)
+                save_by_steps = (cur // int(ts_int)) > (prev // int(ts_int))
+
+            is_last = episode == episodes - 1
+            if save_by_episode or save_by_steps or is_last:
+                save_ckpt = (save_by_episode or save_by_steps) and (not is_last)
+                self.save(
+                    episode=episode,
+                    total_num_steps=int(total_num_steps),
+                    save_checkpoint=bool(save_ckpt),
+                )
+                if save_by_steps:
+                    last_saved_steps = int(total_num_steps)
 
             # log information
             if episode % self.log_interval == 0:

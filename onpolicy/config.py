@@ -248,6 +248,18 @@ def get_config():
         help="[for wandb usage], by default True, will log date "
         "to wandb server. or else will use tensorboard to log data.",
     )
+    parser.add_argument(
+        "--results_root",
+        type=str,
+        default="results/sheep_herding",
+        help="Root directory (relative to repo root) where each training run is stored.",
+    )
+    parser.add_argument(
+        "--run_name",
+        type=str,
+        default=None,
+        help="Optional run folder name. If None, a timestamped folder is created per launch.",
+    )
 
     parser.add_argument(
         "--use_shepherd_env",
@@ -542,8 +554,14 @@ def get_config():
     parser.add_argument(
         "--save_interval",
         type=int,
-        default=1,
-        help="time duration between contiunous twice models saving.",
+        default=25,
+        help="Save checkpoints every N training rollouts (outer training episodes).",
+    )
+    parser.add_argument(
+        "--save_timesteps_interval",
+        type=int,
+        default=None,
+        help="If set, also save checkpoints whenever total env steps crosses a multiple of this value.",
     )
 
     # log parameters
@@ -581,6 +599,30 @@ def get_config():
         action="store_true",
         default=False,
         help="by default, do not save render video. If set, save video.",
+    )
+    parser.add_argument(
+        "--gif_path",
+        type=str,
+        default=None,
+        help="Optional output path for the rendered GIF. If set, implies --save_gifs.",
+    )
+    parser.add_argument(
+        "--render_delay_ms",
+        type=int,
+        default=None,
+        help="Render delay in milliseconds (visualize.py-style). Overrides --ifi (seconds) when set.",
+    )
+    parser.add_argument(
+        "--force_headless",
+        action="store_true",
+        default=False,
+        help="Force headless rendering. In headless mode, --save_gifs is enabled by default.",
+    )
+    parser.add_argument(
+        "--mpl_render",
+        action="store_true",
+        default=False,
+        help="Use matplotlib renderer (visualize.py-style) instead of pyglet/OpenGL env.render().",
     )
     parser.add_argument(
         "--use_render",

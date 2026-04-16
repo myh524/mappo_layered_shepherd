@@ -1,10 +1,14 @@
 import time
 import wandb
 import os
+import json
+import shutil
 import numpy as np
 from itertools import chain
 import torch
 from torch.utils.tensorboard import SummaryWriter
+from pathlib import Path
+from typing import Optional
 
 from onpolicy.utils.separated_buffer import SeparatedReplayBuffer
 from onpolicy.utils.util import update_linear_schedule
@@ -12,6 +16,12 @@ from onpolicy.utils.util import update_linear_schedule
 
 def _t2n(x):
     return x.detach().cpu().numpy()
+
+
+def _tb_scalar(v):
+    if torch.is_tensor(v):
+        return v.detach().float().cpu().item()
+    return float(v)
 
 
 class Runner(object):
@@ -54,9 +64,15 @@ class Runner(object):
             self.gif_dir = str(self.run_dir / "gifs")
             if not os.path.exists(self.gif_dir):
                 os.makedirs(self.gif_dir)
+            self.save_dir = str(self.run_dir / "models")
+            os.makedirs(self.save_dir, exist_ok=True)
+            self.checkpoint_dir = str(self.run_dir / "models" / "checkpoints")
+            os.makedirs(self.checkpoint_dir, exist_ok=True)
         else:
             if self.use_wandb:
                 self.save_dir = str(wandb.run.dir)
+                self.checkpoint_dir = str(Path(self.save_dir) / "checkpoints")
+                os.makedirs(self.checkpoint_dir, exist_ok=True)
             else:
                 self.run_dir = config["run_dir"]
                 self.log_dir = str(self.run_dir / "logs")
@@ -66,6 +82,9 @@ class Runner(object):
                 self.save_dir = str(self.run_dir / "models")
                 if not os.path.exists(self.save_dir):
                     os.makedirs(self.save_dir)
+                self.checkpoint_dir = str(self.run_dir / "models" / "checkpoints")
+                if not os.path.exists(self.checkpoint_dir):
+                    os.makedirs(self.checkpoint_dir)
 
         from onpolicy.algorithms.mappo import R_MAPPO as TrainAlgo
         from onpolicy.algorithms.MAPPOPolicy import R_MAPPOPolicy as Policy
@@ -149,7 +168,12 @@ class Runner(object):
 
         return train_infos
 
-    def save(self):
+    def save(
+        self,
+        episode: int = 0,
+        total_num_steps: Optional[int] = None,
+        save_checkpoint: bool = False,
+    ):
         for agent_id in range(self.num_agents):
             policy_actor = self.trainer[agent_id].policy.actor
             torch.save(
@@ -162,14 +186,47 @@ class Runner(object):
                 str(self.save_dir) + "/critic_agent" + str(agent_id) + ".pt",
             )
 
+            if save_checkpoint and total_num_steps is not None:
+                ckpt = {
+                    "total_num_steps": int(total_num_steps),
+                    "episode": int(episode),
+                    "agent_id": int(agent_id),
+                    "actor_state_dict": policy_actor.state_dict(),
+                    "critic_state_dict": policy_critic.state_dict(),
+                }
+                agent_ckpt_dir = Path(self.checkpoint_dir) / f"agent{agent_id}"
+                agent_ckpt_dir.mkdir(parents=True, exist_ok=True)
+                ckpt_path = str(agent_ckpt_dir / f"model_{int(total_num_steps)}.pt")
+                torch.save(ckpt, ckpt_path)
+                latest_path = str(agent_ckpt_dir / "model_latest.pt")
+                shutil.copyfile(ckpt_path, latest_path)
+
+                meta_path = str(agent_ckpt_dir / "checkpoint_meta.jsonl")
+                with open(meta_path, "a", encoding="utf-8") as f:
+                    f.write(
+                        json.dumps(
+                            {
+                                "total_num_steps": int(total_num_steps),
+                                "episode": int(episode),
+                                "agent_id": int(agent_id),
+                                "file": os.path.basename(ckpt_path),
+                            },
+                            ensure_ascii=False,
+                        )
+                        + "\n"
+                    )
+
     def restore(self):
+        _map = self.device
         for agent_id in range(self.num_agents):
             policy_actor_state_dict = torch.load(
-                str(self.model_dir) + "/actor_agent" + str(agent_id) + ".pt"
+                str(self.model_dir) + "/actor_agent" + str(agent_id) + ".pt",
+                map_location=_map,
             )
             self.policy[agent_id].actor.load_state_dict(policy_actor_state_dict)
             policy_critic_state_dict = torch.load(
-                str(self.model_dir) + "/critic_agent" + str(agent_id) + ".pt"
+                str(self.model_dir) + "/critic_agent" + str(agent_id) + ".pt",
+                map_location=_map,
             )
             self.policy[agent_id].critic.load_state_dict(policy_critic_state_dict)
 
@@ -180,7 +237,13 @@ class Runner(object):
                 if self.use_wandb:
                     wandb.log({agent_k: v}, step=total_num_steps)
                 else:
-                    self.writter.add_scalars(agent_k, {agent_k: v}, total_num_steps)
+                    tag = ("train/agent%i/" % agent_id) + str(k).replace("/", ".")
+                    self.writter.add_scalar(tag, _tb_scalar(v), total_num_steps)
+        if not self.use_wandb:
+            try:
+                self.writter.flush()
+            except Exception:
+                pass
 
     def log_env(self, env_infos, total_num_steps):
         for k, v in env_infos.items():
@@ -188,4 +251,10 @@ class Runner(object):
                 if self.use_wandb:
                     wandb.log({k: np.mean(v)}, step=total_num_steps)
                 else:
-                    self.writter.add_scalars(k, {k: np.mean(v)}, total_num_steps)
+                    tag = "env/" + str(k).replace("/", ".")
+                    self.writter.add_scalar(tag, float(np.mean(v)), total_num_steps)
+        if not self.use_wandb:
+            try:
+                self.writter.flush()
+            except Exception:
+                pass

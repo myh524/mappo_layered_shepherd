@@ -12,6 +12,14 @@ from onpolicy.utils.valuenorm import ValueNorm
 from onpolicy.algorithms.utils.util import check
 import torch.jit as jit
 import torch.cuda.amp as amp
+
+
+def _finite_std(x: float, floor: float = 1e-5) -> float:
+    if not np.isfinite(x) or x < floor:
+        return floor
+    return float(x)
+
+
 class GR_MAPPO():
     """
         Trainer class for Graph MAPPO to update policies.
@@ -50,7 +58,9 @@ class GR_MAPPO():
         self._use_valuenorm = args.use_valuenorm
         self._use_value_active_masks = args.use_value_active_masks
         self._use_policy_active_masks = args.use_policy_active_masks
-        self.scaler = amp.GradScaler() 
+        # GradScaler on CPU (or when CUDA is unavailable) can amplify NaNs; disable unless CUDA trains.
+        self._amp_enabled = bool(getattr(args, "cuda", False)) and torch.cuda.is_available()
+        self.scaler = amp.GradScaler(enabled=self._amp_enabled)
         assert (self._use_popart and self._use_valuenorm) == False, ("self._use_popart and self._use_valuenorm can not be set True simultaneously")
         
         if self._use_popart:
@@ -143,7 +153,9 @@ class GR_MAPPO():
         available_actions_batch = sample
 
         old_action_log_probs_batch = check(old_action_log_probs_batch).to(**self.tpdv)
-        adv_targ = check(adv_targ).to(**self.tpdv)
+        adv_targ = torch.nan_to_num(
+            check(adv_targ).to(**self.tpdv), nan=0.0, posinf=0.0, neginf=0.0
+        )
         value_preds_batch = check(value_preds_batch).to(**self.tpdv)
         return_batch = check(return_batch).to(**self.tpdv)
         active_masks_batch = check(active_masks_batch).to(**self.tpdv)
@@ -165,7 +177,10 @@ class GR_MAPPO():
         # actor update
         # print(f'obs: {obs_batch.shape}')
         # st = time.time()
-        imp_weights = torch.exp(action_log_probs - old_action_log_probs_batch)
+        # Stabilize PPO ratio (large |Δlogπ| overflows exp → inf → NaN grads / GradScaler failure).
+        log_ratio = action_log_probs - old_action_log_probs_batch
+        log_ratio = torch.clamp(log_ratio, -20.0, 20.0)
+        imp_weights = torch.exp(log_ratio)
 
         surr1 = imp_weights * adv_targ
         surr2 = torch.clamp(imp_weights, 1.0 - self.clip_param, 
@@ -263,9 +278,12 @@ class GR_MAPPO():
             advantages = buffer.returns[:-1] - buffer.value_preds[:-1]
         advantages_copy = advantages.copy()
         advantages_copy[buffer.active_masks[:-1] == 0.0] = np.nan
-        mean_advantages = np.nanmean(advantages_copy)
-        std_advantages = np.nanstd(advantages_copy)
+        mean_advantages = float(np.nanmean(advantages_copy))
+        if not np.isfinite(mean_advantages):
+            mean_advantages = 0.0
+        std_advantages = _finite_std(float(np.nanstd(advantages_copy)), floor=1e-5)
         advantages = (advantages - mean_advantages) / (std_advantages + 1e-5)
+        advantages = np.nan_to_num(advantages, nan=0.0, posinf=0.0, neginf=0.0)
         
 
         train_info = {}
